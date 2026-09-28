@@ -12,7 +12,7 @@ local state = {
 }
 local rendered_buffers = {}
 local command_group
-local sidebar_buf, sidebar_win
+local sidebar_buf, sidebar_win, sidebar_source_win, sidebar_rows
 local pending_ns = vim.api.nvim_create_namespace("rv-pending-comment")
 
 local function notify(message, level)
@@ -464,11 +464,17 @@ end
 local function open_listing(lines, title)
   local buf
   if state.config.display == "sidebar" then
-    if not sidebar_win or not vim.api.nvim_win_is_valid(sidebar_win) then
+    if not sidebar_win or not vim.api.nvim_win_is_valid(sidebar_win)
+      or vim.api.nvim_win_get_tabpage(sidebar_win) ~= vim.api.nvim_get_current_tabpage() then
       local source_win = vim.api.nvim_get_current_win()
+      sidebar_buf = nil
       vim.cmd("botright vsplit")
       sidebar_win = vim.api.nvim_get_current_win()
       vim.api.nvim_win_set_width(sidebar_win, 42)
+      vim.wo[sidebar_win].wrap = false
+      vim.wo[sidebar_win].number = false
+      vim.wo[sidebar_win].relativenumber = false
+      vim.wo[sidebar_win].foldenable = false
       buf = vim.api.nvim_create_buf(false, true)
       vim.api.nvim_win_set_buf(sidebar_win, buf)
       vim.api.nvim_set_current_win(source_win)
@@ -486,9 +492,12 @@ local function open_listing(lines, title)
     vim.cmd("botright new")
     buf = current_buffer()
   end
-  if vim.api.nvim_buf_get_name(buf) ~= "rv://" .. title then
-    vim.api.nvim_buf_set_name(buf, "rv://" .. title)
+  -- Keep a stable, unique name: renaming a loaded sidebar to a listing name
+  -- collides with an older sidebar buffer when returning to a file/tab.
+  if vim.api.nvim_buf_get_name(buf) == "" then
+    vim.api.nvim_buf_set_name(buf, "rv://sidebar/" .. buf)
   end
+  if title ~= "review" then sidebar_rows = nil end
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
@@ -534,7 +543,7 @@ function M.show()
       end
     end
   end
-  open_listing(lines, "review")
+  open_listing(lines, "show")
   return result
 end
 
@@ -564,6 +573,78 @@ function M.drafts_view()
   end
   open_listing(lines, "drafts")
   return true
+end
+
+local function sync_sidebar()
+  if not sidebar_rows or not sidebar_source_win or not sidebar_win
+    or not vim.api.nvim_win_is_valid(sidebar_source_win) or not vim.api.nvim_win_is_valid(sidebar_win)
+    or vim.api.nvim_win_get_tabpage(sidebar_source_win) ~= vim.api.nvim_win_get_tabpage(sidebar_win) then
+    return
+  end
+  local view = vim.api.nvim_win_call(sidebar_source_win, vim.fn.winsaveview)
+  local row = sidebar_rows[view.topline]
+  if row then
+    vim.api.nvim_win_call(sidebar_win, function()
+      if vim.fn.winsaveview().topline ~= row then
+        vim.fn.winrestview({ topline = row, lnum = row, col = 0 })
+      end
+    end)
+  end
+end
+
+local function file_sidebar(bufnr, target, branch, threads, drafts)
+  local count = vim.api.nvim_buf_line_count(bufnr)
+  local comments = {}
+  local function put(line, entries)
+    if type(line) ~= "number" or line < 1 or line > count then return end
+    comments[line] = comments[line] or {}
+    vim.list_extend(comments[line], entries)
+  end
+  local function body_lines(body, prefix)
+    local lines = vim.split(tostring(body or "(no body)"), "\n", { plain = true })
+    for i, line in ipairs(lines) do lines[i] = (i == 1 and prefix or "    ") .. line end
+    return lines
+  end
+  local function reply_lines(replies, entries, depth)
+    for _, reply in ipairs(replies or {}) do
+      vim.list_extend(entries, body_lines(reply.deleted and "[deleted reply]" or reply.body,
+        string.rep("  ", depth) .. "↳ "))
+      reply_lines(reply.replies, entries, depth + 1)
+    end
+  end
+  for _, thread in ipairs(threads or {}) do
+    local mapped = thread.mapped
+    if mapped and mapped.path == target.path and mapped.status ~= "deleted"
+      and mapped.status ~= "file_deleted" and mapped.status ~= "binary" then
+      local entries = body_lines(thread.deleted and "[deleted comment]" or thread.body, "● ")
+      reply_lines(thread.replies, entries, 1)
+      put(mapped.start_line, entries)
+    end
+  end
+  for _, action in ipairs(drafts) do
+    local scope = action._context or {}
+    if action.type == "comment" and action.anchor and scope.repo == target.repo
+      and scope.branch == branch.name and action.commit == target.commit
+      and action.anchor.path == target.path then
+      put(action.anchor.start_line, body_lines(action.body, "✎ [draft " .. action.id .. "] "))
+    end
+  end
+  local lines, rows = {}, {}
+  for line = 1, count do
+    rows[line] = #lines + 1
+    local entries = comments[line]
+    if entries then
+      lines[#lines + 1] = entries[1]
+      for i = 2, #entries do lines[#lines + 1] = entries[i] end
+    else
+      lines[#lines + 1] = ""
+    end
+  end
+  open_listing(lines, "review")
+  sidebar_rows = rows
+  local win = vim.fn.bufwinid(bufnr)
+  if win ~= -1 then sidebar_source_win = win end
+  sync_sidebar()
 end
 
 function M.clear_marks()
@@ -612,21 +693,7 @@ function M.refresh_buffer(bufnr, report_errors)
   local active_name = vim.api.nvim_buf_get_name(current_buffer())
   if state.config.display == "sidebar" and (current_buffer() == bufnr
     or (vim.fn.bufwinid(bufnr) ~= -1 and active_name:match("^rv://(comment|edit|reply)/"))) then
-    local lines = { ("# Review %s — %s"):format(branch.name, target.path or ""), "" }
-    for _, thread in ipairs(outcome.result.threads or {}) do format_thread(thread, 0, lines) end
-    for _, action in ipairs(state.drafts) do
-      local scope = action._context or {}
-      if scope.repo == target.repo and scope.branch == branch.name
-        and (not action.anchor or action.anchor.path == target.path) then
-        table.insert(lines, ("- [draft %s] %s %s-%s (edit: :RvEdit %s)"):format(
-          action.type, action.id, tostring(action.anchor and action.anchor.start_line or ""),
-          tostring(action.anchor and action.anchor.end_line or ""), action.id))
-        for _, line in ipairs(vim.split(action.body or "", "\n", { plain = true })) do
-          table.insert(lines, "  " .. line)
-        end
-      end
-    end
-    open_listing(lines, "review")
+    file_sidebar(bufnr, target, branch, outcome.result.threads, state.drafts)
   end
   if outcome.error and report_errors then notify(outcome.error, vim.log.levels.ERROR) end
   return outcome
@@ -716,6 +783,10 @@ local function install_autocmds()
         end)
       end
     end,
+  })
+  vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
+    group = command_group,
+    callback = function() sync_sidebar() end,
   })
   for _, pattern in ipairs({
     "DiffviewViewOpened", "DiffviewViewEnter", "DiffviewViewPostLayout",

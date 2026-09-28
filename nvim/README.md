@@ -47,8 +47,11 @@ Saved line comments render as extmarks after `rv show -b NAME --at FULL_OID
 comments on rewrites are placed by `rv`'s mapping result. Comment and draft
 anchors have a sign and highlighted line range, including while the composer
 is open. By default the sidebar opens alongside the source buffer when a
-branch is selected, and shows full multiline comments and drafts for that
-file. `:RvShow` shows the whole branch; `:RvDrafts` lists all unsaved actions.
+branch is selected. It places each mapped comment or draft beside its source
+line, with body continuation lines underneath, and follows source scrolling.
+`:RvShow` shows the whole branch as a separate listing; `:RvDrafts` lists all
+unsaved actions. The sidebar uses one stable buffer name when switching files
+or listings.
 Use `display = "inline"` to keep end-of-line first-line previews instead.
 
 ## Buffer safety and Diffview support

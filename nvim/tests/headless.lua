@@ -24,7 +24,7 @@ for _, name in ipairs(commands) do
   check(vim.fn.exists(":" .. name) == 2, "command is registered: " .. name)
 end
 vim.cmd("RvBranch")
-local branches_buf = vim.fn.bufnr("rv://branches")
+local branches_buf = vim.fn.bufnr("rv://sidebar/*")
 check(branches_buf ~= -1 and table.concat(vim.api.nvim_buf_get_lines(branches_buf, 0, -1, false), "\n")
   :match("no branches"), "RvBranch without arguments lists empty branches")
 
@@ -43,10 +43,11 @@ check(#marks == 1, "in-memory draft renders before explicitly created branch exi
 local mark = vim.api.nvim_buf_get_extmarks(source, require("rv.render").namespace(), 0, -1, { details = true })[1]
 check(mark[4].end_row == 2 and mark[4].hl_group == "Visual", "multiline anchor highlights both lines")
 check(not mark[4].virt_text or #mark[4].virt_text == 0, "sidebar mode does not append inline comment text")
-local sidebar = vim.fn.bufnr("rv://review")
+local sidebar = vim.fn.bufnr("rv://sidebar/*")
 check(sidebar ~= -1 and vim.fn.bufwinid(sidebar) ~= -1, "default display opens review sidebar")
-check(table.concat(vim.api.nvim_buf_get_lines(sidebar, 0, -1, false), "\n"):match("saved via explicit commit"),
-  "sidebar contains draft body")
+local sidebar_lines = vim.api.nvim_buf_get_lines(sidebar, 0, -1, false)
+check(sidebar_lines[1]:match("saved via explicit commit"), "comment appears beside source line 1")
+check(#sidebar_lines >= vim.api.nvim_buf_line_count(source), "sidebar retains source line positions")
 check(rv.edit_draft(first.id), "draft can be opened for editing by ID")
 local editor = vim.api.nvim_get_current_buf()
 check(vim.api.nvim_buf_get_lines(editor, 0, 1, false)[1] == first.body, "edit composer preloads draft")
@@ -61,6 +62,7 @@ check(wrong_repo_save == nil and wrong_repo_err:match("differs from draft reposi
   "save refuses a changed repository and keeps draft scope")
 check(#rv.get_drafts() == 1, "repository mismatch retains draft")
 vim.cmd.edit(vim.fn.fnameescape(file))
+check(vim.fn.bufnr("rv://sidebar/*") == sidebar, "revisiting file reuses sidebar without buffer name collision")
 
 vim.env.RV_FAKE_FAIL_COMMIT = "1"
 local failed, fail_err = rv.save()
@@ -76,9 +78,15 @@ check(log:match("--create"), "only explicit branch-create selection passes --cre
 check(log:match("--reviewed\t" .. OID), "commit includes full pinned reviewed ID")
 check(log:match('"commit":"' .. OID .. '"'), "JSONL retains full comment commit ID")
 vim.cmd("RvBranch")
-branches_buf = vim.fn.bufnr("rv://branches")
+branches_buf = vim.fn.bufnr("rv://sidebar/*")
 check(branches_buf ~= -1 and table.concat(vim.api.nvim_buf_get_lines(branches_buf, 0, -1, false), "\n")
   :match("%* review"), "RvBranch lists existing branch and marks selection")
+local on_second = rv.comment({ body = "line two\ncontinuation", start_line = 2 })
+check(on_second ~= nil, "draft on second source line")
+local placed = vim.api.nvim_buf_get_lines(sidebar, 0, -1, false)
+check(placed[1]:match("saved comment") and placed[2]:match("line two") and placed[3]:match("continuation"),
+  "sidebar places full comment body at its source line rather than in an abstract log")
+check(rv.save(), "line-two draft saved")
 
 local reply_target = "01912345-6789-7abc-8def-000000000099"
 local reply, reply_err = rv.reply(reply_target, { body = "a reply", buffer = source })
