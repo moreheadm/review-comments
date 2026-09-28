@@ -19,6 +19,7 @@ rv.setup({ command = fake, branch = "review", autosave_on_comment = false })
 local commands = {
   "RvBranch", "RvBranchCreate", "RvComment", "RvReply", "RvDelete",
   "RvCommit", "RvShow", "RvDrafts", "RvEdit", "RvRefresh",
+  "RvSidebarOpen", "RvSidebarClose", "RvSidebarToggle",
 }
 for _, name in ipairs(commands) do
   check(vim.fn.exists(":" .. name) == 2, "command is registered: " .. name)
@@ -81,9 +82,43 @@ vim.cmd("RvBranch")
 branches_buf = vim.fn.bufnr("rv://sidebar/*")
 check(branches_buf ~= -1 and table.concat(vim.api.nvim_buf_get_lines(branches_buf, 0, -1, false), "\n")
   :match("%* review"), "RvBranch lists existing branch and marks selection")
+vim.cmd("RvSidebarClose")
+check(vim.fn.bufwinid(sidebar) == -1 and vim.api.nvim_win_is_valid(vim.api.nvim_get_current_win()),
+  "closing sidebar leaves the source window open")
+local source_win = vim.api.nvim_get_current_win()
+check(vim.api.nvim_win_get_buf(source_win) == source, "source stays focused after closing sidebar")
+check(rv.comment({ start_line = 1 }), "composer opens with sidebar closed")
+local scratch = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(scratch, 0, -1, false, { "draft after sidebar close" })
+vim.cmd.write()
+check(vim.api.nvim_win_is_valid(source_win) and vim.api.nvim_get_current_win() == source_win,
+  "saving composer closes only composer split and returns to source")
+check(vim.api.nvim_win_get_buf(source_win) == source and vim.fn.bufwinid(sidebar) == -1,
+  "composer save does not reopen closed sidebar")
+check(rv.comment({ start_line = 1 }), "composer can reopen after save")
+vim.api.nvim_buf_delete(vim.api.nvim_get_current_buf(), { force = true })
+check(vim.api.nvim_win_is_valid(source_win), "canceling composer does not close source")
+vim.api.nvim_set_current_win(source_win)
+vim.cmd("RvSidebarToggle")
+check(vim.fn.bufwinid(vim.fn.bufnr("rv://sidebar/*")) ~= -1,
+  "toggle reopens the sidebar")
+vim.cmd("RvSidebarToggle")
+check(vim.fn.bufwinid(vim.fn.bufnr("rv://sidebar/*")) == -1,
+  "toggle closes the sidebar")
+vim.cmd("RvSidebarOpen")
+check(vim.fn.bufwinid(vim.fn.bufnr("rv://sidebar/*")) ~= -1,
+  "sidebar opens again with explicit command")
+vim.api.nvim_set_current_win(vim.fn.bufwinid(vim.fn.bufnr("rv://sidebar/*")))
+vim.cmd.close()
+check(vim.api.nvim_win_is_valid(source_win), "manual sidebar close preserves source")
+vim.api.nvim_set_current_win(source_win)
+vim.cmd("RvSidebarOpen")
+check(vim.fn.bufwinid(vim.fn.bufnr("rv://sidebar/*")) ~= -1,
+  "manually closed sidebar can reopen")
+check(rv.save(), "composer-created draft saved")
 local on_second = rv.comment({ body = "line two\ncontinuation", start_line = 2 })
 check(on_second ~= nil, "draft on second source line")
-local placed = vim.api.nvim_buf_get_lines(sidebar, 0, -1, false)
+local placed = vim.api.nvim_buf_get_lines(vim.fn.bufnr("rv://sidebar/*"), 0, -1, false)
 check(placed[1]:match("saved comment") and placed[2]:match("line two") and placed[3]:match("continuation"),
   "sidebar places full comment body at its source line rather than in an abstract log")
 check(rv.save(), "line-two draft saved")

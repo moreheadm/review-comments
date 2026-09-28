@@ -9,6 +9,7 @@ local state = {
   drafts = {},
   composers = 0,
   setup = false,
+  sidebar_enabled = true,
 }
 local rendered_buffers = {}
 local command_group
@@ -161,6 +162,23 @@ local function close_composer(composer)
   state.composers = math.max(0, state.composers - 1)
 end
 
+local function dismiss_composer(composer)
+  close_composer(composer)
+  -- Close only the composer split, never delete the active source window's
+  -- buffer: nvim_buf_delete on a displayed buffer can replace/close the wrong
+  -- window when autocommands have opened a sidebar in the meantime.
+  if composer.win and vim.api.nvim_win_is_valid(composer.win) then
+    if vim.api.nvim_get_current_win() == composer.win and composer.origin
+      and vim.api.nvim_win_is_valid(composer.origin) then
+      vim.api.nvim_set_current_win(composer.origin)
+    end
+    pcall(vim.api.nvim_win_close, composer.win, true)
+  end
+  if composer.buf and vim.api.nvim_buf_is_valid(composer.buf) then
+    pcall(vim.api.nvim_buf_delete, composer.buf, { force = true })
+  end
+end
+
 local function finalize_composer(composer, body)
   if composer.closed then return nil, "Composer is already closed" end
   if type(body) ~= "string" or body:gsub("%s", "") == "" then
@@ -187,9 +205,9 @@ local function finalize_composer(composer, body)
     added, err = add_draft(action, composer.context, branch)
   end
   if not added then return nil, err end
-  close_composer(composer)
-  if vim.api.nvim_buf_is_valid(composer.buf) then
-    pcall(vim.api.nvim_buf_delete, composer.buf, { force = true })
+  dismiss_composer(composer)
+  if vim.api.nvim_buf_is_valid(composer.context.buffer) then
+    M.refresh_buffer(composer.context.buffer, false)
   end
   notify("draft added (not saved; use :RvCommit)")
   return added
@@ -202,6 +220,7 @@ local function open_composer(action, draft_context, branch, title, edit_index)
     repo = draft_context.repo,
     branch = branch.name,
     closed = false,
+    origin = vim.api.nvim_get_current_win(),
     edit_index = edit_index,
     edit_id = edit_index and action.id or nil,
   }
@@ -218,12 +237,13 @@ local function open_composer(action, draft_context, branch, title, edit_index)
   vim.cmd("botright new")
   local buf = current_buffer()
   composer.buf = buf
+  composer.win = vim.api.nvim_get_current_win()
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     once = true,
     callback = function() close_composer(composer) end,
   })
-  vim.api.nvim_buf_set_name(buf, ("rv://%s/%s"):format(title, action.id))
+  vim.api.nvim_buf_set_name(buf, ("rv://%s/%s/%d"):format(title, action.id, buf))
   vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
@@ -242,8 +262,7 @@ local function open_composer(action, draft_context, branch, title, edit_index)
     vim.cmd("write")
   end, { buffer = buf, silent = true, desc = "Add rv draft" })
   vim.keymap.set("n", "<C-c>", function()
-    close_composer(composer)
-    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    dismiss_composer(composer)
   end, { buffer = buf, silent = true, desc = "Cancel rv draft" })
   notify(("%s in Markdown scratch buffer; <C-s> saves the draft, <C-c> cancels"):format(title))
   return true
@@ -523,6 +542,7 @@ local function format_thread(thread, depth, lines)
 end
 
 function M.show()
+  state.sidebar_enabled = true
   local root, root_err = selected_root()
   if not root then return nil, root_err end
   local branch, err = branch_for(root)
@@ -548,6 +568,7 @@ function M.show()
 end
 
 function M.branches_view()
+  state.sidebar_enabled = true
   local root, err = selected_root()
   if not root then return nil, err end
   local names, list_err = branch_names(root)
@@ -563,6 +584,7 @@ function M.branches_view()
 end
 
 function M.drafts_view()
+  state.sidebar_enabled = true
   local lines = { "# Unsaved rv drafts", "" }
   for _, action in ipairs(state.drafts) do
     local scope = action._context or {}
@@ -647,6 +669,53 @@ local function file_sidebar(bufnr, target, branch, threads, drafts)
   sync_sidebar()
 end
 
+function M.close_sidebar()
+  state.sidebar_enabled = false
+  sidebar_rows = nil
+  if sidebar_win and vim.api.nvim_win_is_valid(sidebar_win) then
+    local win = sidebar_win
+    if vim.api.nvim_get_current_win() == win and sidebar_source_win
+      and vim.api.nvim_win_is_valid(sidebar_source_win) then
+      vim.api.nvim_set_current_win(sidebar_source_win)
+    end
+    sidebar_win = nil
+    sidebar_buf = nil
+    vim.api.nvim_win_close(win, true)
+  end
+  return true
+end
+
+function M.open_sidebar()
+  if state.config.display ~= "sidebar" then return nil, "Sidebar requires display = 'sidebar'" end
+  state.sidebar_enabled = true
+  local bufnr = current_buffer()
+  if sidebar_win and vim.api.nvim_win_is_valid(sidebar_win)
+    and bufnr == vim.api.nvim_win_get_buf(sidebar_win) then
+    if not sidebar_source_win or not vim.api.nvim_win_is_valid(sidebar_source_win) then
+      return nil, "Open a source file first"
+    end
+    bufnr = vim.api.nvim_win_get_buf(sidebar_source_win)
+  end
+  if not state.branch then return M.branches_view() end
+  local result, err
+  if current_buffer() ~= bufnr and sidebar_source_win and vim.api.nvim_win_is_valid(sidebar_source_win) then
+    result, err = vim.api.nvim_win_call(sidebar_source_win, function()
+      return M.refresh_buffer(bufnr, true)
+    end)
+  else
+    result, err = M.refresh_buffer(bufnr, true)
+  end
+  if not result then return nil, err or "Open a reviewable source file first" end
+  return true
+end
+
+function M.toggle_sidebar()
+  if state.sidebar_enabled and sidebar_win and vim.api.nvim_win_is_valid(sidebar_win) then
+    return M.close_sidebar()
+  end
+  return M.open_sidebar()
+end
+
 function M.clear_marks()
   for bufnr in pairs(rendered_buffers) do
     if vim.api.nvim_buf_is_valid(bufnr) then
@@ -691,8 +760,9 @@ function M.refresh_buffer(bufnr, report_errors)
   end
   rendered_buffers[bufnr] = true
   local active_name = vim.api.nvim_buf_get_name(current_buffer())
-  if state.config.display == "sidebar" and (current_buffer() == bufnr
-    or (vim.fn.bufwinid(bufnr) ~= -1 and active_name:match("^rv://(comment|edit|reply)/"))) then
+  if state.config.display == "sidebar" and state.sidebar_enabled and (current_buffer() == bufnr
+    or (sidebar_win and vim.api.nvim_win_is_valid(sidebar_win)
+      and vim.fn.bufwinid(bufnr) ~= -1 and active_name:match("^rv://(comment|edit|reply)/"))) then
     file_sidebar(bufnr, target, branch, outcome.result.threads, state.drafts)
   end
   if outcome.error and report_errors then notify(outcome.error, vim.log.levels.ERROR) end
@@ -767,6 +837,15 @@ local function define_commands()
   vim.api.nvim_create_user_command("RvDrafts", function()
     command_call(M.drafts_view)
   end, { nargs = 0, desc = "List in-memory review drafts" })
+  vim.api.nvim_create_user_command("RvSidebarOpen", function()
+    command_call(M.open_sidebar)
+  end, { nargs = 0, desc = "Open the review sidebar" })
+  vim.api.nvim_create_user_command("RvSidebarClose", function()
+    command_call(M.close_sidebar)
+  end, { nargs = 0, desc = "Close the review sidebar" })
+  vim.api.nvim_create_user_command("RvSidebarToggle", function()
+    command_call(M.toggle_sidebar)
+  end, { nargs = 0, desc = "Toggle the review sidebar" })
   vim.api.nvim_create_user_command("RvRefresh", function()
     command_call(M.refresh)
   end, { nargs = 0, desc = "Refresh review extmarks in the current buffer" })
@@ -774,6 +853,15 @@ end
 
 local function install_autocmds()
   command_group = vim.api.nvim_create_augroup("rv_review_comments", { clear = true })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = command_group,
+    callback = function(event)
+      if tonumber(event.match) == sidebar_win then
+        sidebar_win, sidebar_buf, sidebar_rows = nil, nil, nil
+        state.sidebar_enabled = false
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "BufWritePost" }, {
     group = command_group,
     callback = function(event)

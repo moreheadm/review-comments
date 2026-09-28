@@ -40,6 +40,10 @@ or creating a branch never silently redirects or discards drafts.
   `rv commit --json`. Failures keep every draft for retry.
 - `:RvShow` — show saved review threads and drafts for the selected branch.
 - `:RvDrafts` — list unsaved in-memory drafts.
+- `:RvSidebarOpen`, `:RvSidebarClose`, `:RvSidebarToggle` — explicitly control
+  the sidebar. Closing it keeps it closed across file navigation and comments;
+  opening it again refreshes the current file. `:RvShow`, `:RvDrafts`, and
+  `:RvBranch` explicitly open a listing in the sidebar.
 - `:RvRefresh` — reload mapped comments and extmarks in the current buffer.
 
 Saved line comments render as extmarks after `rv show -b NAME --at FULL_OID
@@ -51,7 +55,8 @@ branch is selected. It places each mapped comment or draft beside its source
 line, with body continuation lines underneath, and follows source scrolling.
 `:RvShow` shows the whole branch as a separate listing; `:RvDrafts` lists all
 unsaved actions. The sidebar uses one stable buffer name when switching files
-or listings.
+or listings. Closing a comment composer returns to the source window without
+closing it; saving a comment does not reopen a sidebar you closed explicitly.
 Use `display = "inline"` to keep end-of-line first-line previews instead.
 
 ## Buffer safety and Diffview support
@@ -118,7 +123,8 @@ local commit_result, save_error = rv.save()
 
 `comment` accepts `buffer`, `start_line`, `end_line`, `body`, `autosave_on_comment`,
 and `anchor = false` (top-level comment). Other public helpers are
-`edit_draft(id)`, `branches_view()`, `select_branch(name)`, `create_branch(name)`, `show()`, `refresh()`,
+`edit_draft(id)`, `branches_view()`, `select_branch(name)`, `create_branch(name)`,
+`open_sidebar()`, `close_sidebar()`, `toggle_sidebar()`, `show()`, `refresh()`,
 `get_drafts()`, and `get_state()`. `create_branch` has the same explicit-arming
 semantics as `:RvBranchCreate`. The `command` setup option may point to a
 non-default `rv` executable (also used by the headless tests).
