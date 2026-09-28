@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+command=${1:-}
+shift || true
+case "$command" in
+  branches)
+    if [ -f "$RV_FAKE_STATE/branch.exists" ]; then
+      printf '{"rv":1,"branches":[{"name":"review","tip":"%s","reviews":1}]}\n' "$RV_FAKE_REVIEW_OID"
+    else
+      printf '{"rv":1,"branches":[]}\n'
+    fi
+    ;;
+  id)
+    counter=0
+    if [ -f "$RV_FAKE_STATE/id" ]; then IFS= read -r counter < "$RV_FAKE_STATE/id"; fi
+    counter=$((counter + 1))
+    printf '%s\n' "$counter" > "$RV_FAKE_STATE/id"
+    printf '{"rv":1,"id":"01912345-6789-7abc-8def-%012d"}\n' "$counter"
+    ;;
+  show)
+    if [ ! -f "$RV_FAKE_STATE/branch.exists" ]; then
+      printf '{"rv":1,"error":{"code":"branch_not_found","message":"review branch does not exist","details":{}}}\n' >&2
+      exit 4
+    fi
+    printf '{"rv":1,"branch":"review","tip":"%s","at":"%s","threads":[{"id":"01912345-6789-7abc-8def-000000000099","body":"saved comment","anchor":{"commit":"%s","path":"src/example.lua","start_line":1,"end_line":1},"mapped":{"commit":"%s","path":"src/example.lua","start_line":1,"end_line":1,"status":"exact"},"replies":[]}],"orphans":[]}\n' \
+      "$RV_FAKE_REVIEW_OID" "$RV_FAKE_COMMIT_OID" "$RV_FAKE_COMMIT_OID" "$RV_FAKE_COMMIT_OID"
+    ;;
+  commit)
+    if [ "${RV_FAKE_FAIL_COMMIT:-}" = "1" ]; then
+      printf '{"rv":1,"error":{"code":"tip_moved","message":"mock failure","details":{}}}\n' >&2
+      exit 5
+    fi
+    {
+      printf 'ARGV'
+      for arg in "$@"; do printf '\t%s' "$arg"; done
+      printf '\nJSONL\n'
+      while IFS= read -r line; do printf '%s\n' "$line"; done
+      printf 'END\n'
+    } >> "$RV_FAKE_LOG"
+    for arg in "$@"; do
+      if [ "$arg" = "--create" ]; then : > "$RV_FAKE_STATE/branch.exists"; fi
+    done
+    printf '{"rv":1,"branch":"review","commit":"%s","actions":[],"attempts":1}\n' "$RV_FAKE_REVIEW_OID"
+    ;;
+  *)
+    printf 'unexpected fake rv command: %s\n' "$command" >&2
+    exit 2
+    ;;
+esac
