@@ -538,6 +538,21 @@ function M.show()
   return result
 end
 
+function M.branches_view()
+  local root, err = selected_root()
+  if not root then return nil, err end
+  local names, list_err = branch_names(root)
+  if not names then return nil, list_err end
+  local lines = { "# Review branches", "", "Select with :RvBranch NAME", "" }
+  for _, name in ipairs(names) do
+    table.insert(lines, (state.branch and state.branch.repo == root and state.branch.name == name
+      and "* " or "- ") .. name)
+  end
+  if #names == 0 then table.insert(lines, "(no branches; use :RvBranchCreate NAME)") end
+  open_listing(lines, "branches")
+  return names
+end
+
 function M.drafts_view()
   local lines = { "# Unsaved rv drafts", "" }
   for _, action in ipairs(state.drafts) do
@@ -651,8 +666,12 @@ end
 
 local function define_commands()
   vim.api.nvim_create_user_command("RvBranch", function(cmd)
-    command_call(M.select_branch, cmd.args)
-  end, { nargs = 1, desc = "Select an existing rv review branch" })
+    if cmd.args == "" then
+      command_call(M.branches_view)
+    else
+      command_call(M.select_branch, cmd.args)
+    end
+  end, { nargs = "?", desc = "List branches or select an existing rv review branch" })
   vim.api.nvim_create_user_command("RvBranchCreate", function(cmd)
     command_call(M.create_branch, cmd.args)
   end, { nargs = 1, desc = "Explicitly arm creation of an rv review branch" })

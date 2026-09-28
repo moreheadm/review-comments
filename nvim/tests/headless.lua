@@ -23,6 +23,10 @@ local commands = {
 for _, name in ipairs(commands) do
   check(vim.fn.exists(":" .. name) == 2, "command is registered: " .. name)
 end
+vim.cmd("RvBranch")
+local branches_buf = vim.fn.bufnr("rv://branches")
+check(branches_buf ~= -1 and table.concat(vim.api.nvim_buf_get_lines(branches_buf, 0, -1, false), "\n")
+  :match("no branches"), "RvBranch without arguments lists empty branches")
 
 local action, err = rv.comment({ body = "should not silently create", start_line = 1 })
 check(action == nil and err:match("RvBranchCreate"), "absent branch requires explicit create selection")
@@ -71,6 +75,10 @@ local log = table.concat(vim.fn.readfile(vim.env.RV_FAKE_LOG), "\n")
 check(log:match("--create"), "only explicit branch-create selection passes --create")
 check(log:match("--reviewed\t" .. OID), "commit includes full pinned reviewed ID")
 check(log:match('"commit":"' .. OID .. '"'), "JSONL retains full comment commit ID")
+vim.cmd("RvBranch")
+branches_buf = vim.fn.bufnr("rv://branches")
+check(branches_buf ~= -1 and table.concat(vim.api.nvim_buf_get_lines(branches_buf, 0, -1, false), "\n")
+  :match("%* review"), "RvBranch lists existing branch and marks selection")
 
 local reply_target = "01912345-6789-7abc-8def-000000000099"
 local reply, reply_err = rv.reply(reply_target, { body = "a reply", buffer = source })

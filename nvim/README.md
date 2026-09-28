@@ -13,14 +13,16 @@ require("rv").setup({
 
 The plugin loader also calls `setup()` with defaults. A configured or selected
 branch is always repository-scoped. If no branch was supplied, select one with
-`:RvBranch NAME`; this only accepts an existing review branch. To start a new
+`:RvBranch NAME`; this only accepts an existing review branch. Run
+`:RvBranch` without a name to list available branches. To start a new
 branch, explicitly arm creation with `:RvBranchCreate NAME`, then add an action
 and save it. The branch is created only by a successful `:RvCommit`. Selecting
 or creating a branch never silently redirects or discards drafts.
 
 ## Commands
 
-- `:RvBranch NAME` — select an existing review branch in this repository.
+- `:RvBranch` — list available review branches in this repository (the selected
+  branch is marked with `*`). `:RvBranch NAME` selects an existing branch.
 - `:RvBranchCreate NAME` — explicitly select a name that does not yet exist.
 - `:[range]RvComment` — draft a comment on the current line/range. Select lines
   visually and run `:RvComment` (Neovim supplies `'<,'>`), or use e.g.
@@ -113,7 +115,7 @@ local commit_result, save_error = rv.save()
 
 `comment` accepts `buffer`, `start_line`, `end_line`, `body`, `autosave_on_comment`,
 and `anchor = false` (top-level comment). Other public helpers are
-`edit_draft(id)`, `select_branch(name)`, `create_branch(name)`, `show()`, `refresh()`,
+`edit_draft(id)`, `branches_view()`, `select_branch(name)`, `create_branch(name)`, `show()`, `refresh()`,
 `get_drafts()`, and `get_state()`. `create_branch` has the same explicit-arming
 semantics as `:RvBranchCreate`. The `command` setup option may point to a
 non-default `rv` executable (also used by the headless tests).
