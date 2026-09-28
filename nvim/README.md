@@ -7,6 +7,7 @@ This is a Neovim >= 0.10 plugin for the `rv` CLI. Put this directory on
 require("rv").setup({
   branch = "agent-task-42", -- optional; selects, never creates
   autosave_on_comment = false,
+  display = "sidebar", -- default; use "inline" for end-of-line comment text
 })
 ```
 
@@ -21,24 +22,32 @@ or creating a branch never silently redirects or discards drafts.
 
 - `:RvBranch NAME` — select an existing review branch in this repository.
 - `:RvBranchCreate NAME` — explicitly select a name that does not yet exist.
-- `:[range]RvComment` — draft a comment on the current line/range. A Markdown
-  scratch buffer opens; `<C-s>` adds the draft and `<C-c>` cancels. The command
-  supports multiline text. Lua callers may pass `body` directly.
+- `:[range]RvComment` — draft a comment on the current line/range. Select lines
+  visually and run `:RvComment` (Neovim supplies `'<,'>`), or use e.g.
+  `:2,5RvComment` for a multiline anchor. A Markdown scratch buffer opens;
+  `<C-s>` (or `:write`) adds the draft and `<C-c>` cancels. The body can also
+  contain multiple lines; Lua callers may pass `body` directly.
 - `:RvReply ACTION_ID` — draft a reply to a saved or current-draft comment/reply;
   it uses the same Markdown composer (or Lua `body`).
 - `:RvDelete ACTION_ID` — draft a logical deletion of a comment or reply.
+- `:RvEdit ACTION_ID` — reopen an unsaved comment/reply draft to edit its body;
+  save with `<C-s>`/`:write` or cancel with `<C-c>`. Find its ID in the sidebar
+  or `:RvDrafts`. This preserves its ID and line range; saved comments cannot
+  be edited this way. Delete drafts have no editable body.
 - `:RvCommit` — explicitly pass all in-memory drafts as JSONL to
   `rv commit --json`. Failures keep every draft for retry.
-- `:RvShow` — open a scratch listing of saved review threads on the selected
-  branch.
+- `:RvShow` — show saved review threads and drafts for the selected branch.
 - `:RvDrafts` — list unsaved in-memory drafts.
 - `:RvRefresh` — reload mapped comments and extmarks in the current buffer.
 
 Saved line comments render as extmarks after `rv show -b NAME --at FULL_OID
 --path PATH --json`. Branch tip and `--at` are always explicit full commit IDs;
 comments on rewrites are placed by `rv`'s mapping result. Comment and draft
-markers show the comment's first line, and saved replies appear inline. The
-full thread text remains available in `:RvShow`.
+anchors have a sign and highlighted line range, including while the composer
+is open. By default the sidebar opens alongside the source buffer when a
+branch is selected, and shows full multiline comments and drafts for that
+file. `:RvShow` shows the whole branch; `:RvDrafts` lists all unsaved actions.
+Use `display = "inline"` to keep end-of-line first-line previews instead.
 
 ## Buffer safety and Diffview support
 
@@ -104,7 +113,7 @@ local commit_result, save_error = rv.save()
 
 `comment` accepts `buffer`, `start_line`, `end_line`, `body`, `autosave_on_comment`,
 and `anchor = false` (top-level comment). Other public helpers are
-`select_branch(name)`, `create_branch(name)`, `show()`, `refresh()`,
+`edit_draft(id)`, `select_branch(name)`, `create_branch(name)`, `show()`, `refresh()`,
 `get_drafts()`, and `get_state()`. `create_branch` has the same explicit-arming
 semantics as `:RvBranchCreate`. The `command` setup option may point to a
 non-default `rv` executable (also used by the headless tests).

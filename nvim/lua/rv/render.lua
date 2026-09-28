@@ -10,20 +10,22 @@ local function first_line(text)
   return line
 end
 
-local function mark(bufnr, line, end_line, label)
+local function mark(bufnr, line, end_line, label, sidebar)
   if type(line) ~= "number" or line < 1 then return false end
   local count = vim.api.nvim_buf_line_count(bufnr)
   if line > count then return false end
   end_line = math.max(line, math.min(tonumber(end_line) or line, count))
   local opts = {
-    virt_text = { { "  ▸ " .. label, "DiagnosticInfo" } },
     virt_text_pos = "eol",
     hl_mode = "combine",
     priority = 150,
     sign_text = "●",
     sign_hl_group = "DiagnosticInfo",
   }
-  if end_line > line then opts.end_row = end_line end
+  if not sidebar then opts.virt_text = { { "  ▸ " .. label, "DiagnosticInfo" } } end
+  opts.end_row = end_line
+  opts.hl_group = "Visual"
+  opts.hl_eol = false
   local ok = pcall(vim.api.nvim_buf_set_extmark, bufnr, namespace, line - 1, 0, opts)
   return ok
 end
@@ -45,7 +47,7 @@ function M.show(root, branch, at, path, executable)
   return result
 end
 
-function M.render_buffer(bufnr, root, branch, at, path, drafts, executable, allow_absent)
+function M.render_buffer(bufnr, root, branch, at, path, drafts, executable, allow_absent, sidebar)
   local result, err, failure = show(root, branch, at, path, executable)
   if not result then
     if allow_absent and failure and failure.error and failure.error.code == "branch_not_found" then
@@ -73,7 +75,7 @@ function M.render_buffer(bufnr, root, branch, at, path, drafts, executable, allo
         end
       end
       append_replies(thread.replies)
-      if mark(bufnr, start_line, end_line, text) then rendered = rendered + 1 end
+      if mark(bufnr, start_line, end_line, text, sidebar) then rendered = rendered + 1 end
     end
   end
 
@@ -83,7 +85,7 @@ function M.render_buffer(bufnr, root, branch, at, path, drafts, executable, allo
       and action.type == "comment" and action.commit == at and action.anchor
       and action.anchor.path == path then
       local label = "draft: " .. first_line(action.body)
-      if mark(bufnr, action.anchor.start_line, action.anchor.end_line, label) then
+      if mark(bufnr, action.anchor.start_line, action.anchor.end_line, label, sidebar) then
         rendered = rendered + 1
       end
     end

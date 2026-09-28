@@ -18,7 +18,7 @@ rv.setup({ command = fake, branch = "review", autosave_on_comment = false })
 
 local commands = {
   "RvBranch", "RvBranchCreate", "RvComment", "RvReply", "RvDelete",
-  "RvCommit", "RvShow", "RvDrafts", "RvRefresh",
+  "RvCommit", "RvShow", "RvDrafts", "RvEdit", "RvRefresh",
 }
 for _, name in ipairs(commands) do
   check(vim.fn.exists(":" .. name) == 2, "command is registered: " .. name)
@@ -36,6 +36,21 @@ check(vim.fn.filereadable(vim.env.RV_FAKE_LOG) == 0, "drafting did not call rv c
 
 local marks = vim.api.nvim_buf_get_extmarks(source, require("rv.render").namespace(), 0, -1, {})
 check(#marks == 1, "in-memory draft renders before explicitly created branch exists")
+local mark = vim.api.nvim_buf_get_extmarks(source, require("rv.render").namespace(), 0, -1, { details = true })[1]
+check(mark[4].end_row == 2 and mark[4].hl_group == "Visual", "multiline anchor highlights both lines")
+check(not mark[4].virt_text or #mark[4].virt_text == 0, "sidebar mode does not append inline comment text")
+local sidebar = vim.fn.bufnr("rv://review")
+check(sidebar ~= -1 and vim.fn.bufwinid(sidebar) ~= -1, "default display opens review sidebar")
+check(table.concat(vim.api.nvim_buf_get_lines(sidebar, 0, -1, false), "\n"):match("saved via explicit commit"),
+  "sidebar contains draft body")
+check(rv.edit_draft(first.id), "draft can be opened for editing by ID")
+local editor = vim.api.nvim_get_current_buf()
+check(vim.api.nvim_buf_get_lines(editor, 0, 1, false)[1] == first.body, "edit composer preloads draft")
+vim.api.nvim_buf_set_lines(editor, 0, -1, false, { "revised", "draft" })
+vim.cmd.write()
+check(#rv.get_drafts() == 1 and rv.get_drafts()[1].body == "revised\ndraft", "edit replaces body without a new action")
+check(rv.get_drafts()[1].id == first.id and rv.get_drafts()[1].anchor.end_line == 2,
+  "editing preserves draft ID and multiline anchor")
 vim.cmd.edit(vim.fn.fnameescape(vim.env.RV_GIT_TEST_REPO .. "/src/plain.txt"))
 local wrong_repo_save, wrong_repo_err = rv.save()
 check(wrong_repo_save == nil and wrong_repo_err:match("differs from draft repository"),
@@ -72,11 +87,23 @@ check(saved_replies ~= nil, "reply/delete explicitly save: " .. tostring(save_re
 local opened, open_err = rv.comment({ start_line = 2, end_line = 2 })
 check(opened == true, "comment opens Markdown composer: " .. tostring(open_err))
 local composer = vim.api.nvim_get_current_buf()
+check(#vim.api.nvim_buf_get_extmarks(source, vim.api.nvim_get_namespaces()["rv-pending-comment"], 0, -1, {}) == 1,
+  "comment composer highlights its source range immediately")
 vim.api.nvim_buf_set_lines(composer, 0, -1, false, { "first paragraph", "", "second paragraph" })
 vim.cmd.write()
 local drafts = rv.get_drafts()
 check(#drafts == 1 and drafts[1].body == "first paragraph\n\nsecond paragraph", "composer preserves multiline Markdown")
+check(#vim.api.nvim_buf_get_extmarks(source, vim.api.nvim_get_namespaces()["rv-pending-comment"], 0, -1, {}) == 0,
+  "composer indicator is removed when saved")
 check(rv.save(), "composer draft explicit save")
+vim.api.nvim_set_current_buf(source)
+vim.cmd("1,2RvComment")
+local ranged_composer = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(ranged_composer, 0, -1, false, { "both lines" })
+vim.cmd.write()
+check(rv.get_drafts()[1].anchor.start_line == 1 and rv.get_drafts()[1].anchor.end_line == 2,
+  "command range becomes a multiline anchor")
+check(rv.save(), "ranged command draft explicit save")
 
 -- Modified normal buffers are rejected by default; opt-in writes the source
 -- buffer, snapshots jj @ again, and still does not commit the review.
