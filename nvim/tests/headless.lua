@@ -49,6 +49,15 @@ check(sidebar ~= -1 and vim.fn.bufwinid(sidebar) ~= -1, "default display opens r
 local sidebar_lines = vim.api.nvim_buf_get_lines(sidebar, 0, -1, false)
 check(sidebar_lines[1]:match("saved via explicit commit"), "comment appears beside source line 1")
 check(#sidebar_lines >= vim.api.nvim_buf_line_count(source), "sidebar retains source line positions")
+check(not table.concat(sidebar_lines, "\n"):find(first.id, 1, true),
+  "sidebar does not expose action UUIDs")
+-- The sidebar's Enter mapping edits a draft without exposing its UUID.
+vim.api.nvim_set_current_win(vim.fn.bufwinid(sidebar))
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+check(vim.api.nvim_buf_get_name(0):match("^rv://edit/"), "Enter opens selected draft")
+vim.cmd.bwipeout({ bang = true })
+vim.api.nvim_set_current_buf(source)
 check(rv.edit_draft(first.id), "draft can be opened for editing by ID")
 local editor = vim.api.nvim_get_current_buf()
 check(vim.api.nvim_buf_get_lines(editor, 0, 1, false)[1] == first.body, "edit composer preloads draft")
@@ -155,6 +164,41 @@ vim.cmd.write()
 check(rv.get_drafts()[1].anchor.start_line == 1 and rv.get_drafts()[1].anchor.end_line == 2,
   "command range becomes a multiline anchor")
 check(rv.save(), "ranged command draft explicit save")
+rv.setup({ commit_on_close = true })
+local commits_before_close = vim.fn.getfsize(vim.env.RV_FAKE_LOG)
+check(rv.comment({ start_line = 1 }), "open comment for commit on close")
+local closing_buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(closing_buf, 0, -1, false, { "saved when window closes", "second line" })
+vim.cmd("close")
+check(vim.wait(1000, function() return vim.fn.getfsize(vim.env.RV_FAKE_LOG) > commits_before_close end),
+  "closing composer commits the review when commit_on_close is enabled")
+check(#rv.get_drafts() == 0, "successful commit on close clears draft")
+check(vim.api.nvim_win_is_valid(source_win), "commit on close preserves source window")
+vim.api.nvim_set_current_win(source_win)
+check(rv.comment({ start_line = 1 }), "open comment to explicitly cancel")
+local cancelled = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(cancelled, 0, -1, false, { "do not keep" })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+check(#rv.get_drafts() == 0, "explicit cancel bypasses commit on close")
+vim.api.nvim_set_current_win(source_win)
+check(rv.comment({ start_line = 1 }), "open composer for commit via Ctrl-S")
+local commits_before_save = vim.fn.getfsize(vim.env.RV_FAKE_LOG)
+vim.api.nvim_buf_set_lines(vim.api.nvim_get_current_buf(), 0, -1, false, { "commit via Ctrl-S" })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-s>", true, false, true), "x", false)
+check(vim.fn.getfsize(vim.env.RV_FAKE_LOG) > commits_before_save and #rv.get_drafts() == 0,
+  "Ctrl-S commits review when commit_on_close is enabled")
+vim.api.nvim_set_current_win(source_win)
+vim.env.RV_FAKE_FAIL_COMMIT = "1"
+check(rv.comment({ start_line = 1 }), "open composer for failed commit on close")
+vim.api.nvim_buf_set_lines(vim.api.nvim_get_current_buf(), 0, -1, false, { "keep on failure" })
+vim.cmd("close")
+local close_processed = false
+vim.schedule(function() close_processed = true end)
+check(vim.wait(1000, function() return close_processed end) and #rv.get_drafts() == 1,
+  "failed commit on close keeps the draft for retry")
+vim.env.RV_FAKE_FAIL_COMMIT = nil
+check(rv.save(), "retained draft can be committed explicitly")
+rv.setup({ commit_on_close = false })
 
 -- Modified normal buffers are rejected by default; opt-in writes the source
 -- buffer, snapshots jj @ again, and still does not commit the review.

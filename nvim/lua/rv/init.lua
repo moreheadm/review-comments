@@ -4,7 +4,7 @@ local render = require("rv.render")
 
 local M = {}
 local state = {
-  config = { command = "rv", autosave_on_comment = false, display = "sidebar" },
+  config = { command = "rv", autosave_on_comment = false, commit_on_close = false, display = "sidebar" },
   branch = nil,
   drafts = {},
   composers = 0,
@@ -179,7 +179,7 @@ local function dismiss_composer(composer)
   end
 end
 
-local function finalize_composer(composer, body)
+local function finalize_composer(composer, body, from_wipe)
   if composer.closed then return nil, "Composer is already closed" end
   if type(body) ~= "string" or body:gsub("%s", "") == "" then
     return nil, "Comment/reply body cannot be empty"
@@ -205,11 +205,28 @@ local function finalize_composer(composer, body)
     added, err = add_draft(action, composer.context, branch)
   end
   if not added then return nil, err end
-  dismiss_composer(composer)
-  if vim.api.nvim_buf_is_valid(composer.context.buffer) then
-    M.refresh_buffer(composer.context.buffer, false)
+  if from_wipe then
+    close_composer(composer)
+  else
+    dismiss_composer(composer)
   end
-  notify("draft added (not saved; use :RvCommit)")
+  local function finish()
+    if composer.commit_on_close then
+      -- BufWipeout runs before Neovim returns focus to the source split.
+      if #state.drafts > 0 then
+        local committed, commit_err = M.save()
+        if not committed then
+          notify("commit on close failed; drafts retained: " .. tostring(commit_err), vim.log.levels.ERROR)
+        end
+      end
+    else
+      notify("draft added (not saved; use :RvCommit)")
+    end
+    if vim.api.nvim_buf_is_valid(composer.context.buffer) then
+      M.refresh_buffer(composer.context.buffer, false)
+    end
+  end
+  if from_wipe then vim.schedule(finish) else finish() end
   return added
 end
 
@@ -220,6 +237,7 @@ local function open_composer(action, draft_context, branch, title, edit_index)
     repo = draft_context.repo,
     branch = branch.name,
     closed = false,
+    commit_on_close = state.config.commit_on_close,
     origin = vim.api.nvim_get_current_win(),
     edit_index = edit_index,
     edit_id = edit_index and action.id or nil,
@@ -241,10 +259,23 @@ local function open_composer(action, draft_context, branch, title, edit_index)
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     once = true,
-    callback = function() close_composer(composer) end,
+    callback = function()
+      if composer.closed then return end
+      if composer.commit_on_close then
+        local ok, lines = pcall(vim.api.nvim_buf_get_lines, buf, 0, -1, false)
+        local body = ok and table.concat(lines, "\n") or ""
+        if body:gsub("%s", "") ~= "" then
+          local saved, err = finalize_composer(composer, body, true)
+          if not saved then notify(err, vim.log.levels.ERROR) end
+        end
+      end
+      close_composer(composer)
+    end,
   })
   vim.api.nvim_buf_set_name(buf, ("rv://%s/%s/%d"):format(title, action.id, buf))
-  vim.bo[buf].buftype = "acwrite"
+  -- nofile buffers can close normally while modified; acwrite would block
+  -- :close with E37 before the wipe callback gets a chance to save.
+  vim.bo[buf].buftype = composer.commit_on_close and "nofile" or "acwrite"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "markdown"
@@ -259,12 +290,19 @@ local function open_composer(action, draft_context, branch, title, edit_index)
     end,
   })
   vim.keymap.set("n", "<C-s>", function()
-    vim.cmd("write")
+    if composer.commit_on_close then
+      local body = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+      local saved, err = finalize_composer(composer, body)
+      if not saved then notify(err, vim.log.levels.ERROR) end
+    else
+      vim.cmd("write")
+    end
   end, { buffer = buf, silent = true, desc = "Add rv draft" })
   vim.keymap.set("n", "<C-c>", function()
     dismiss_composer(composer)
   end, { buffer = buf, silent = true, desc = "Cancel rv draft" })
-  notify(("%s in Markdown scratch buffer; <C-s> saves the draft, <C-c> cancels"):format(title))
+  notify(("%s in Markdown scratch buffer; <C-s> %s, <C-c> cancels"):format(title,
+    composer.commit_on_close and "commits the review (as does closing)" or "saves the draft"))
   return true
 end
 
@@ -480,7 +518,7 @@ function M.save()
   return result
 end
 
-local function open_listing(lines, title)
+local function open_listing(lines, title, edit_rows)
   local buf
   if state.config.display == "sidebar" then
     if not sidebar_win or not vim.api.nvim_win_is_valid(sidebar_win)
@@ -524,6 +562,13 @@ local function open_listing(lines, title)
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, #lines > 0 and lines or { "(no review activity)" })
   vim.bo[buf].modifiable = false
+  vim.keymap.set("n", "<CR>", function()
+    local id = edit_rows and edit_rows[vim.api.nvim_win_get_cursor(0)[1]]
+    if id then
+      local opened, err = M.edit_draft(id)
+      if not opened then notify(err, vim.log.levels.ERROR) end
+    end
+  end, { buffer = buf, silent = true, desc = "Edit review draft on this line" })
   return buf
 end
 
@@ -551,19 +596,21 @@ function M.show()
   if not result then return nil, show_err end
   local lines = { ("# Review branch %s (%s)"):format(branch.name, tostring(result.tip or "no tip")), "" }
   for _, thread in ipairs(result.threads or {}) do format_thread(thread, 0, lines) end
+  local edit_rows = {}
   for _, action in ipairs(state.drafts) do
     local scope = action._context or {}
     if scope.repo == root and scope.branch == branch.name then
-      table.insert(lines, ("- [draft %s] %s %s:%s-%s"):format(action.type, tostring(action.id),
+      table.insert(lines, ("- [draft %s] %s:%s-%s"):format(action.type,
         tostring(action.anchor and action.anchor.path or ""),
         tostring(action.anchor and action.anchor.start_line or ""),
         tostring(action.anchor and action.anchor.end_line or "")))
+      if action.type ~= "delete" then edit_rows[#lines] = action.id end
       for _, body_line in ipairs(vim.split(action.body or "", "\n", { plain = true })) do
         table.insert(lines, "  " .. body_line)
       end
     end
   end
-  open_listing(lines, "show")
+  open_listing(lines, "show", edit_rows)
   return result
 end
 
@@ -586,14 +633,16 @@ end
 function M.drafts_view()
   state.sidebar_enabled = true
   local lines = { "# Unsaved rv drafts", "" }
+  local edit_rows = {}
   for _, action in ipairs(state.drafts) do
     local scope = action._context or {}
-    table.insert(lines, ("- %s %s on %s/%s"):format(
-      action.type, tostring(action.id), tostring(scope.repo or "?"), tostring(scope.branch or "?")
+    table.insert(lines, ("- %s on %s/%s"):format(
+      action.type, tostring(scope.repo or "?"), tostring(scope.branch or "?")
     ))
+    if action.type ~= "delete" then edit_rows[#lines] = action.id end
     if action.body then table.insert(lines, "  " .. action.body:gsub("\n", "\n  ")) end
   end
-  open_listing(lines, "drafts")
+  open_listing(lines, "drafts", edit_rows)
   return true
 end
 
@@ -616,10 +665,14 @@ end
 
 local function file_sidebar(bufnr, target, branch, threads, drafts)
   local count = vim.api.nvim_buf_line_count(bufnr)
-  local comments = {}
-  local function put(line, entries)
+  local comments, draft_rows = {}, {}
+  local function put(line, entries, id)
     if type(line) ~= "number" or line < 1 or line > count then return end
     comments[line] = comments[line] or {}
+    if id then
+      draft_rows[line] = draft_rows[line] or {}
+      draft_rows[line][#comments[line] + 1] = id
+    end
     vim.list_extend(comments[line], entries)
   end
   local function body_lines(body, prefix)
@@ -648,21 +701,23 @@ local function file_sidebar(bufnr, target, branch, threads, drafts)
     if action.type == "comment" and action.anchor and scope.repo == target.repo
       and scope.branch == branch.name and action.commit == target.commit
       and action.anchor.path == target.path then
-      put(action.anchor.start_line, body_lines(action.body, "✎ [draft " .. action.id .. "] "))
+      put(action.anchor.start_line, body_lines(action.body, "✎ [draft] "), action.id)
     end
   end
-  local lines, rows = {}, {}
+  local lines, rows, edit_rows = {}, {}, {}
   for line = 1, count do
     rows[line] = #lines + 1
     local entries = comments[line]
     if entries then
-      lines[#lines + 1] = entries[1]
-      for i = 2, #entries do lines[#lines + 1] = entries[i] end
+      for i, entry in ipairs(entries) do
+        lines[#lines + 1] = entry
+        if draft_rows[line] then edit_rows[#lines] = draft_rows[line][i] end
+      end
     else
       lines[#lines + 1] = ""
     end
   end
-  open_listing(lines, "review")
+  open_listing(lines, "review", edit_rows)
   sidebar_rows = rows
   local win = vim.fn.bufwinid(bufnr)
   if win ~= -1 then sidebar_source_win = win end
@@ -895,6 +950,9 @@ function M.setup(opts)
   local new_config = vim.tbl_extend("force", state.config, opts)
   if new_config.autosave_on_comment ~= nil and type(new_config.autosave_on_comment) ~= "boolean" then
     error("rv.setup: autosave_on_comment must be boolean")
+  end
+  if type(new_config.commit_on_close) ~= "boolean" then
+    error("rv.setup: commit_on_close must be boolean")
   end
   if new_config.display ~= "sidebar" and new_config.display ~= "inline" then
     error("rv.setup: display must be sidebar or inline")

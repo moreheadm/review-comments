@@ -7,6 +7,7 @@ This is a Neovim >= 0.10 plugin for the `rv` CLI. Put this directory on
 require("rv").setup({
   branch = "agent-task-42", -- optional; selects, never creates
   autosave_on_comment = false,
+  commit_on_close = false, -- optional: commit review when closing a nonempty composer
   display = "sidebar", -- default; use "inline" for end-of-line comment text
 })
 ```
@@ -27,15 +28,19 @@ or creating a branch never silently redirects or discards drafts.
 - `:[range]RvComment` — draft a comment on the current line/range. Select lines
   visually and run `:RvComment` (Neovim supplies `'<,'>`), or use e.g.
   `:2,5RvComment` for a multiline anchor. A Markdown scratch buffer opens;
-  `<C-s>` (or `:write`) adds the draft and `<C-c>` cancels. The body can also
-  contain multiple lines; Lua callers may pass `body` directly.
+  `<C-s>` (or `:write` with default settings) adds the draft and `<C-c>`
+  cancels. With `commit_on_close = true`, closing the composer (`:close` or
+  `:q`) commits the review (including other pending drafts) when the body is
+  nonempty; `<C-c>` still cancels. In that mode use `<C-s>` rather than `:write`. The body can contain multiple lines; Lua
+  callers may pass `body` directly.
 - `:RvReply ACTION_ID` — draft a reply to a saved or current-draft comment/reply;
   it uses the same Markdown composer (or Lua `body`).
 - `:RvDelete ACTION_ID` — draft a logical deletion of a comment or reply.
-- `:RvEdit ACTION_ID` — reopen an unsaved comment/reply draft to edit its body;
-  save with `<C-s>`/`:write` or cancel with `<C-c>`. Find its ID in the sidebar
-  or `:RvDrafts`. This preserves its ID and line range; saved comments cannot
-  be edited this way. Delete drafts have no editable body.
+- `:RvEdit ACTION_ID` — reopen an unsaved comment/reply draft to edit its body.
+  Normally just move to the draft in the sidebar (or `:RvDrafts`/`:RvShow`)
+  and press `<CR>` instead; UUIDs are not shown in plugin windows. Saving
+  preserves its ID and line range. Saved comments and delete drafts cannot
+  be edited this way.
 - `:RvCommit` — explicitly pass all in-memory drafts as JSONL to
   `rv commit --json`. Failures keep every draft for retry.
 - `:RvShow` — show saved review threads and drafts for the selected branch.
@@ -101,8 +106,11 @@ Drafts are scoped to their repository and selected branch. Branch switching is
 refused while any draft or composer is active; save also verifies that the
 selected repository/branch still matches the draft scope. Comment, reply and
 delete actions receive IDs from `rv id`; only a successful explicit `:RvCommit`
-clears the drafts. Closing or wiping a composer cancels that composer without
-blocking later branch selection. If the selected branch is deleted externally,
+clears the drafts. By default closing or wiping a composer cancels it without
+blocking later branch selection. With `commit_on_close = true`, closing a
+nonempty composer adds its draft and calls `rv commit` for all pending drafts.
+A failed commit retains the drafts for retry via `:RvCommit`. Explicit `<C-c>`
+always cancels without committing. If the selected branch is deleted externally,
 drafts are retained: `:RvBranchCreate SAME_NAME` explicitly re-arms creation for
 the same repository and branch. This does not restore deleted review history;
 replies to lost targets cannot be saved until that history is restored.
@@ -111,7 +119,7 @@ replies to lost targets cannot be saved until that history is restored.
 
 ```lua
 local rv = require("rv")
-rv.setup({ branch = "agent-task-42", autosave_on_comment = false })
+rv.setup({ branch = "agent-task-42", autosave_on_comment = false, commit_on_close = false })
 
 -- With body, these return the created action; without body, comment/reply opens
 -- the Markdown composer. Failures return nil, message.
@@ -128,6 +136,9 @@ and `anchor = false` (top-level comment). Other public helpers are
 `get_drafts()`, and `get_state()`. `create_branch` has the same explicit-arming
 semantics as `:RvBranchCreate`. The `command` setup option may point to a
 non-default `rv` executable (also used by the headless tests).
+`commit_on_close` applies to newly opened composers; it commits the review
+when a nonempty composer is closed or saved with `<C-s>`, but does not
+save source files.
 
 ## Tests
 
